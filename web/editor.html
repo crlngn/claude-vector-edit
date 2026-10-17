@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Artboard vector editor</title>
+<link rel="stylesheet" href="web/editor.css">
+</head>
+<body>
+<div id="app">
+  <div class="bar">
+    <div class="group" id="tools">
+      <button class="tool active" data-tool="move" title="Move anchors (V)"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z"/></svg>Move<kbd>V</kbd></button>
+      <button class="tool" data-tool="lasso" title="Lasso select (L)"><svg viewBox="0 0 24 24"><path d="M4 10c0-3 4-5 8-5s8 2 8 5-4 5-8 5c-2 0-3 1-3 3s1 3 3 3" stroke-dasharray="3 2"/></svg>Lasso<kbd>L</kbd></button>
+      <button class="tool" data-tool="bend" title="Bend segments and handles (B)"><svg viewBox="0 0 24 24"><path d="M4 19C6 8 14 5 20 5"/><circle cx="4" cy="19" r="1.6"/><circle cx="20" cy="5" r="1.6"/></svg>Bend<kbd>B</kbd></button>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+      <button class="tool" data-tool="cut" disabled title="Cut (v2)"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M8 7.5L20 18M8 16.5L20 6"/></svg>Cut</button>
+      <button class="tool" data-tool="erase" disabled title="Erase (v2)"><svg viewBox="0 0 24 24"><path d="M4 16l9-9 6 6-7 7H8z"/></svg>Erase</button>
+      <button class="tool" id="more" title="More"><span>More</span><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M6 9l6 6 6-6"/></svg></button>
+    </div>
+    <div class="spacer"></div>
+    <button class="tool" id="zoomActive" title="Zoom to active svg (1) · Fit (0)"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <select class="board" id="board" title="Artboard"></select>
+    <button class="tool" id="reload" title="Reload from disk (discard unsaved)"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg></button>
+    <button class="tool" id="autosave" title="Auto-save on settle" aria-pressed="false"><span class="led"></span>Auto-save</button>
+    <button class="tool" id="save" title="Save (⌘S)">Save<span class="dot" id="saveDot"></span></button>
+  </div>
+  <div id="stage">
+    <div id="world">
+      <iframe id="frame" sandbox="allow-same-origin" title="Artboard preview"></iframe>
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div id="empty"><div>Loading artboard…</div></div>
+    <div id="toast"></div>
+  </div>
+  <div id="status">
+    <span><span class="dot" id="dot"></span><span id="saveState">Loading</span></span>
+    <span id="svgInfo"></span>
+    <span id="selInfo"></span>
+    <span class="spacer"></span>
+    <span id="hint">Click or drag anchors · shift adds · click an edge to add a point</span>
+    <span id="zoomInfo">100%</span>
+  </div>
+  <div class="menu" id="menu">
+    <button data-act="toggle-kind">Corner / Smooth <kbd>dbl-click</kbd></button>
+    <button data-act="select-all">Select all anchors <kbd>⌘A</kbd></button>
+    <button data-act="delete">Delete selected anchors <kbd>⌫</kbd></button>
+    <button data-act="fit">Fit to window <kbd>0</kbd></button>
+    <button data-act="zoom-active">Zoom to active svg <kbd>1</kbd></button>
+  </div>
+</div>
+<script type="module" src="web/editor.js"></script>
+</body>
+</html>

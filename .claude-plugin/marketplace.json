@@ -1,0 +1,5 @@
+{
+  "name": "artboard-vector",
+  "owner": { "name": "Carol" },
+  "plugins": [{ "name": "artboard-vector", "source": "./" }]
+}

@@ -1,0 +1,54 @@
+:root {
+  --bg: #121214; --panel: #1b1b1f; --panel-2: #232328; --line: #2c2c33; --text: #e8e8ec; --muted: #9a9aa6;
+  --accent: #3b82f6; --accent-soft: rgba(59,130,246,.22); --danger: #ef4444; --ok: #22c55e;
+  --font: "Atkinson Hyperlegible Next", "Inter", system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 var(--font); overflow: hidden }
+#app { display: grid; grid-template-rows: 44px 1fr 26px; height: 100% }
+.bar { display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--line) }
+.bar .group { display: flex; gap: 2px; padding: 3px; background: var(--panel-2); border-radius: 10px }
+.bar .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px }
+.bar .spacer { flex: 1 }
+.tool { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer }
+.tool svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round }
+.tool:hover { background: rgba(255,255,255,.06) }
+.tool.active { background: var(--accent); color: #fff }
+.tool:disabled { opacity: .4; cursor: not-allowed }
+.tool kbd { font: 10px/1 var(--font); color: var(--muted); padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px }
+.tool.active kbd { color: rgba(255,255,255,.8); border-color: rgba(255,255,255,.35) }
+select.board { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; max-width: 260px }
+#stage { position: relative; overflow: hidden; background: #0d0d0f; background-image: radial-gradient(rgba(255,255,255,.06) 1px, transparent 1px); background-size: 20px 20px; cursor: default }
+#world { position: absolute; left: 0; top: 0; transform-origin: 0 0 }
+#frame { position: absolute; left: 0; top: 0; border: 0; pointer-events: none; background: #fff; box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 20px 60px rgba(0,0,0,.6); display: block }
+#overlay { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: all }
+#overlay * { pointer-events: auto }
+#overlay .shape-hit { fill: none; stroke: transparent; stroke-width: 10; cursor: pointer }
+#overlay .outline { fill: none; stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; opacity: .9 }
+#overlay .outline.locked { stroke: var(--muted); stroke-dasharray: 4 3 }
+#overlay .seg-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: crosshair }
+#overlay .handle-line { stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; opacity: .8 }
+#overlay .handle { fill: #fff; stroke: var(--accent); stroke-width: 1.2; vector-effect: non-scaling-stroke; cursor: move }
+#overlay .anchor { fill: #fff; stroke: var(--accent); stroke-width: 1.4; vector-effect: non-scaling-stroke; cursor: move }
+#overlay .anchor.selected { fill: var(--accent) }
+#overlay .marquee { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none }
+#overlay .lasso { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none }
+#status { display: flex; align-items: center; gap: 14px; padding: 0 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px }
+#status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px }
+#status .dot.dirty { background: #f59e0b } #status .dot.saved { background: var(--ok) } #status .dot.error { background: var(--danger) }
+#status .spacer { flex: 1 }
+.menu { position: absolute; top: 46px; right: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px; display: none; flex-direction: column; min-width: 220px; z-index: 5; box-shadow: 0 12px 40px rgba(0,0,0,.5) }
+.menu.open { display: flex }
+.menu button, .menu label { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 10px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; border-radius: 6px; cursor: pointer }
+.menu button:hover, .menu label:hover { background: rgba(255,255,255,.06) }
+.menu kbd { color: var(--muted); font-size: 11px }
+#toast { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 8px 14px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 6 }
+#toast.show { opacity: 1 }
+#empty { position: absolute; inset: 0; display: none; place-items: center; color: var(--muted); text-align: center; padding: 40px }
+#empty.show { display: grid }
+#save { position: relative }
+#save .dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); display: none }
+#save .dot.show { display: block }
+#autosave .led { width: 8px; height: 8px; border-radius: 50%; background: var(--line); box-shadow: inset 0 0 0 1px rgba(255,255,255,.15) }
+#autosave.on .led { background: var(--accent) }
+#hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48vw }
