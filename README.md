@@ -32,7 +32,7 @@ In a session that has worked on a Design canvas (or with the canvas URL once):
 /vector-edit --list
 ```
 
-With a shape selected in the canvas, `/vector-edit` alone opens on it. A comment on a shape sent to Claude that says "edit shapes" opens the editor there too.
+With a shape selected in the canvas, `/vector-edit` alone opens on it. A comment on a shape sent to Claude that starts with `/vector-edit` or `vector:` opens the editor there too, when the comment is delivered to the session running the mod; any other comment goes to Claude as usual.
 
 Only inline SVG geometry is editable (`path`, `rect`, `circle`, `ellipse`, `line`, `polygon`, `polyline`); shapes bound to template holes are shown locked, and CSS-drawn shapes are not shapes to the editor.
 

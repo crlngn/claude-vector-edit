@@ -1,6 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 
-test('/vector-edit explains itself when no canvas is known', async $ => {
+test('/vector-edit explains itself when no canvas is known', async ($, on) => {
+  on('tool.call', { tool: 'Artifact' }, () => ({ deny: 'no network in tests' }))
   const { text } = await $.command.run({ command: 'vector-edit', args: '' })
   expect(text).toMatch(/canvas/)
 })

@@ -10,6 +10,10 @@ const canvasRef = atom({ plugin: 'artboard-vector', key: 'canvas' } as const, nu
 const serverRef = atom({ plugin: 'artboard-vector', key: 'server' } as const, null as ArtboardVectorServer | null)
 const pendingRef = atom({ plugin: 'artboard-vector', key: 'pendingPublish' } as const, null as ArtboardVectorPending | null)
 const notesRef = atom({ plugin: 'artboard-vector', key: 'notes' } as const, [] as string[])
+// Server starts are queued here and run by a loop rooted in session.start, so the child outlives whatever dispatch asked for it.
+const serverRequests: { root: string; ok: (s: ArtboardVectorServer) => void; no: (e: Error) => void }[] = []
+// A comment opens the editor only when it starts with `/vector-edit` or `vector:` (anything after is ignored).
+const TRIGGER = /^\s*(\/vector-edit\b|vector:)/i
 const boardsFamily = { plugin: 'artboard-vector', key: 'boards' } as const
 
 type $ = EngineInterface
@@ -74,49 +78,50 @@ async function stopServer($: $, server: ArtboardVectorServer | null) {
   await update($, serverRef, () => null)
 }
 
-/** Start the editor server for `root` and keep its event loop running past the hook. */
-async function startServer($: $, root: string): Promise<ArtboardVectorServer> {
+/** Ask the session.start runner to start the editor server for `root`; resolves once it listens. */
+function startServer($: $, root: string): Promise<ArtboardVectorServer> {
+  return new Promise<ArtboardVectorServer>((ok, no) => {
+    serverRequests.push({ root, ok, no })
+    void $.clock.sleep(8000).then(() => no(new Error('the editor server did not start in 8 s')))
+  })
+}
+
+/** Runs one editor server to its end: spawns it, relays its events, and resolves the request once it listens. */
+async function runServer($: $, req: { root: string; ok: (s: ArtboardVectorServer) => void; no: (e: Error) => void }) {
   const token = crypto.randomUUID().replace(/-/g, '')
-  const argv = [await nodeBinary($), `${$.plugin.root}/server/server.mjs`, '--root', root, '--token', token]
-  const stream = $.process.spawn({ argv, cwd: root })
-  let resolveListening!: (s: ArtboardVectorServer) => void
-  let rejectListening!: (e: Error) => void
-  const listening = new Promise<ArtboardVectorServer>((ok, no) => { resolveListening = ok; rejectListening = no })
-  void (async () => {
-    let buffer = ''
-    try {
-      for await (const chunk of stream) {
-        if (!('stream' in chunk)) break
-        if (chunk.stream !== 'stdout') { $.ui.log(`${PLUGIN} server: ${chunk.text.trim()}`, { to: 'debug' }); continue }
-        buffer += chunk.text
-        let nl: number
-        while ((nl = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, nl).trim(); buffer = buffer.slice(nl + 1)
-          if (!line) continue
-          let ev: ServerEvent
-          try { ev = JSON.parse(line) } catch { continue }
-          if (ev.event === 'listening') {
-            const s = { port: ev.port, token, root }
-            await update($, serverRef, () => s)
-            resolveListening(s)
-          } else if (ev.event === 'saved') {
-            await update($, { ...boardsFamily, id: ev.board }, () => ({ dirty: false, lastSaved: ev.at }))
-            await publishBack($, ev)
-          } else if (ev.event === 'dirty') {
-            await update($, { ...boardsFamily, id: ev.board }, (b?: ArtboardVectorBoard) => ({ dirty: ev.dirty, lastSaved: b?.lastSaved ?? null }))
-          } else if (ev.event === 'error') {
-            $.ui.toast(`Vector editor: ${ev.message}`)
-          }
+  const argv = [await nodeBinary($), `${$.plugin.root}/server/server.mjs`, '--root', req.root, '--token', token]
+  const stream = $.process.spawn({ argv, cwd: req.root })
+  let buffer = ''
+  try {
+    for await (const chunk of stream) {
+      if (!('stream' in chunk)) break
+      if (chunk.stream !== 'stdout') { $.ui.log(`${PLUGIN} server: ${chunk.text.trim()}`, { to: 'debug' }); continue }
+      buffer += chunk.text
+      let nl: number
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim(); buffer = buffer.slice(nl + 1)
+        if (!line) continue
+        let ev: ServerEvent
+        try { ev = JSON.parse(line) } catch { continue }
+        if (ev.event === 'listening') {
+          const s = { port: ev.port, token, root: req.root }
+          await update($, serverRef, () => s)
+          req.ok(s)
+        } else if (ev.event === 'saved') {
+          await update($, { ...boardsFamily, id: ev.board }, () => ({ dirty: false, lastSaved: ev.at }))
+          await publishBack($, ev)
+        } else if (ev.event === 'dirty') {
+          await update($, { ...boardsFamily, id: ev.board }, (b?: ArtboardVectorBoard) => ({ dirty: ev.dirty, lastSaved: b?.lastSaved ?? null }))
+        } else if (ev.event === 'error') {
+          $.ui.toast(`Vector editor: ${ev.message}`)
         }
       }
-    } catch (e) {
-      rejectListening(e instanceof Error ? e : new Error(String(e)))
-    } finally {
-      await update($, serverRef, () => null)
     }
-  })()
-  const timeout = $.clock.sleep(8000).then(() => { throw new Error('the editor server did not start in 8 s') })
-  return Promise.race([listening, timeout])
+  } catch (e) {
+    req.no(e instanceof Error ? e : new Error(String(e)))
+  } finally {
+    await update($, serverRef, () => null)
+  }
 }
 
 /** Republish the saved board to the canvas through the Artifact tool, retrying once over a stale refusal. */
@@ -167,10 +172,18 @@ async function guard($: $, filePath: string | undefined, what: string): Promise<
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: COMMAND, description: 'Vector-edit the shapes of a /design artboard in the browser pane', argumentHint: '[Board.dc.html] [--url <canvas url>] [--root <folder>]' })
+    await $.command.register({ name: COMMAND, description: 'Vector-edit the shapes of a /design artboard in the browser pane', argumentHint: '[canvas words] [artboard] [--list] [--canvases]' })
     let kept: ArtboardVectorCanvas | undefined
     try { kept = (await $.store.get('canvas')) as ArtboardVectorCanvas | undefined } catch {}
     if (kept && kept.url && kept.root && !(await read($, canvasRef))) await update($, canvasRef, () => kept)
+    // Serve queued server starts from here, so each child lives as long as the session (or the module), not one dispatch.
+    void (async () => {
+      for (;;) {
+        await $.clock.sleep(250)
+        const req = serverRequests.shift()
+        if (req) await runServer($, req)
+      }
+    })()
     return next(e)
   })
 
@@ -224,17 +237,31 @@ export const register: Register = on => {
     let canvas = await read($, canvasRef)
     let board: string | undefined
     let wantList = false
+    let wantCanvasList = false
+    const query: string[] = []
     for (let i = 0; i < words.length; i++) {
       const w = words[i]
       if (w === '--list') { wantList = true; continue }
+      if (w === '--canvases') { wantCanvasList = true; continue }
       if (w === '--url' && words[i + 1]) { canvas = { url: words[++i], root: '' }; continue }
       if (w === '--root' && words[i + 1]) { canvas = { url: canvas?.url ?? '', root: words[++i] }; continue }
       if (/^https?:\/\//.test(w)) { canvas = { url: w, root: canvas && canvas.url === w ? canvas.root : '' }; continue }
       if (isBoardName(w)) board = w
-      else if (isBoardName(w + '.dc.html')) board = w + '.dc.html'
+      else query.push(w)
     }
-    if (!canvas || !canvas.url) {
-      return { text: `No /design canvas is known in this session yet. Publish or read one first, or run /${COMMAND} <canvas url> [Board.dc.html].` }
+    // Free words: first try them as a canvas title (when no canvas is bound, or they clearly name another one), then as an artboard.
+    if (wantCanvasList || !canvas || !canvas.url || query.length) {
+      const canvases = await listCanvases($)
+      if (wantCanvasList) return { text: canvases.length ? `Your Design canvases:\n${canvases.map(c => `  ${c.title}  ${c.url}`).join('\n')}\n\nOpen one with /${COMMAND} <words from its title> [artboard].` : 'No Design canvases found for your account.' }
+      const match = query.length ? bestMatch(canvases.map(c => ({ key: c.title, value: c })), query) : null
+      if (match && match.unique) {
+        if (!canvas || canvas.url !== match.value.url) canvas = { url: match.value.url, root: '' }
+        query.splice(0, query.length, ...match.rest)
+      } else if (!canvas || !canvas.url) {
+        if (!canvases.length) return { text: `No Design canvas is known yet and none was found for your account. Run /${COMMAND} <canvas url> [Board.dc.html].` }
+        const shown = match && match.candidates.length ? match.candidates : canvases
+        return { text: `Which canvas? Say /${COMMAND} <words from its title> [artboard]:\n${shown.map(c => `  ${c.title}`).join('\n')}` }
+      }
     }
     const ready = await ensureRoot($, canvas)
     if ('text' in ready) return ready
@@ -247,8 +274,14 @@ export const register: Register = on => {
     }
     if (!board) {
       const names = await boardNames($, canvas)
-      if (names.length === 1) board = names[0]
-      else return { text: names.length ? `Which artboard? /${COMMAND} <name>  (or /${COMMAND} --list to see which have editable shapes)\n${names.map(n => `  ${n}`).join('\n')}` : `No artboards found for ${canvas.url}.` }
+      if (query.length) {
+        const titles = await boardTitles($, canvas)
+        const m = bestMatch(names.map(n => ({ key: n.replace(/\.dc\.html$/, '') + ' ' + (titles[n] || ''), value: n })), query)
+        if (m && m.unique) board = m.value
+        else if (m && m.candidates.length) return { text: `Which artboard? ${m.candidates.map(c => c.trim()).join(' · ')}` }
+      }
+      if (!board && names.length === 1) board = names[0]
+      if (!board) return { text: names.length ? `Which artboard? /${COMMAND} <name>  (or /${COMMAND} --list to see which have editable shapes)\n${names.map(n => `  ${n.replace(/\.dc\.html$/, '')}`).join('\n')}` : `No artboards found for ${canvas.url}.` }
     }
     return openEditor($, canvas, board, select)
   })
@@ -257,7 +290,7 @@ export const register: Register = on => {
   on('session.receive', async ($, e, next) => {
     if (e.agentId !== undefined || !/Artifact comment sent to Claude/.test(e.text)) return next(e)
     const body = (e.text.match(/=== BEGIN ARTIFACT COMMENT \w+ ===\n([\s\S]*?)\n=== END ARTIFACT COMMENT/) || [])[1] || ''
-    if (!/\b(edit|vector)[ -]?(shapes?|edit|editor|points?)\b|\/vector-edit/i.test(body)) return next(e)
+    if (!TRIGGER.test(body)) return next(e)
     const uuid = (e.text.match(/Artifact: https?:\/\/\S+\/artifact\/([0-9a-f-]{36})/) || [])[1]
     const anchor = e.text.match(/Anchor detail: (\S+\.dc\.html): #(\d+:\d+(?:\/\d+)*)/)
     const board = anchor ? decodeURIComponent(anchor[1]) : undefined
@@ -354,4 +387,40 @@ async function openEditor($: $, canvas: ArtboardVectorCanvas, board: string, sel
   return opened
     ? { text: `Vector editor open for ${board}.` }
     : { text: `Vector editor ready for ${board}: ${url}`, context: [`Open ${url} in the built-in browser pane with preview_start (url), then stop and let the user edit there. The ${PLUGIN} mod republishes the canvas itself on save; do not read, verify or publish the board unless asked.`] }
+}
+
+/** The user's Design canvases, from the Artifact tool's listing. */
+async function listCanvases($: $): Promise<{ title: string; url: string }[]> {
+  const ran = await $.tool.call({ tool: 'Artifact', action: 'list', type: 'Design', limit: 50 })
+  if (ran.deny !== undefined || ran.isError === true || !ran.text) return []
+  const out: { title: string; url: string }[] = []
+  for (const line of ran.text.split('\n')) {
+    const m = line.match(/^- (?:\([^)]*\) )?(?:[^:]*default[^:]*: )?(.+?) — (https:\/\/claude\.ai\/artifact\/[A-Za-z0-9-]+)/)
+    if (m) out.push({ title: m[1].trim(), url: m[2] })
+  }
+  return out
+}
+
+/** Words against names: every query word must appear (case-insensitive) in the name; unique when exactly one name wins. */
+function bestMatch<T>(items: { key: string; value: T }[], words: string[]): { unique: boolean; value: T; candidates: string[]; rest: string[] } | null {
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+  let best: { score: number; items: { key: string; value: T }[]; rest: string[] } | null = null
+  // try the longest prefix of the words first, so trailing words can name the artboard
+  for (let n = words.length; n >= 1; n--) {
+    const use = words.slice(0, n).map(norm), rest = words.slice(n)
+    const hits = items.filter(it => { const k = ' ' + norm(it.key) + ' '; return use.every(w => k.includes(w)) })
+    if (hits.length) { best = { score: n, items: hits, rest }; break }
+  }
+  if (!best) return null
+  return { unique: best.items.length === 1, value: best.items[0].value, candidates: best.items.map(i => i.key), rest: best.rest }
+}
+
+/** Artboard titles from the local canvas.json, keyed by file name. */
+async function boardTitles($: $, canvas: ArtboardVectorCanvas): Promise<Record<string, string>> {
+  try {
+    const idx = JSON.parse(await $.fs.read(`${canvas.root}/project/canvas.json`))
+    const out: Record<string, string> = {}
+    for (const [name, b] of Object.entries(idx.boards || {})) if (b && typeof (b as { title?: unknown }).title === 'string') out[name] = (b as { title: string }).title
+    return out
+  } catch { return {} }
 }
