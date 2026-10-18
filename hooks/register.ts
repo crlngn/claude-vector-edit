@@ -12,6 +12,7 @@ const pendingRef = atom({ plugin: 'artboard-vector', key: 'pendingPublish' } as 
 const notesRef = atom({ plugin: 'artboard-vector', key: 'notes' } as const, [] as string[])
 const openOfferRef = atom({ plugin: 'artboard-vector', key: 'openOffer' } as const, null as { url: string; board: string } | null)
 const OPEN_PANE = 'vector-open'
+let sessionCwd = ''
 // Server starts are queued here and run by a loop rooted in session.start, so the child outlives whatever dispatch asked for it.
 const serverRequests: { root: string; ok: (s: ArtboardVectorServer) => void; no: (e: Error) => void }[] = []
 // A comment opens the editor only when it starts with `/vector-edit` or `vector:` (anything after is ignored).
@@ -164,8 +165,8 @@ async function publishBack($: $, saved: { board: string; path: string; svgOrdina
     const mine = await $.fs.read(saved.path)
     // The tool wants the artifact itself viewed at its latest version, then the file re-read.
     await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url })
-    const fresh = await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url, path: `project/${saved.board}`, out_dir: canvas.root })
-    if (fresh.deny === undefined && fresh.isError !== true) {
+    const fresh = await pullFile($, canvas, `project/${saved.board}`)
+    if (fresh.ok) {
       const theirs = await $.fs.read(saved.path)
       const mineSpans = scanSvgSpans(mine), theirSpans = scanSvgSpans(theirs)
       let merged = theirs
@@ -193,6 +194,7 @@ async function guard($: $, filePath: string | undefined, what: string): Promise<
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    sessionCwd = e.cwd
     await $.command.register({ name: COMMAND, description: 'Vector-edit the shapes of a /design artboard in the browser pane', argumentHint: '[canvas words] [artboard] [--list] [--canvases]' })
     let kept: ArtboardVectorCanvas | undefined
     try { kept = (await $.store.get('canvas')) as ArtboardVectorCanvas | undefined } catch {}
@@ -217,7 +219,8 @@ export const register: Register = on => {
     if (url && root && /\/artifact\//.test(url)) {
       const uuid = ((ran.text || '').match(/Artifact ([0-9a-f]{8}-[0-9a-f-]{27})/) || [])[1]
       const prior = await read($, canvasRef)
-      const canvas: ArtboardVectorCanvas = { url, root, uuid: uuid ?? (prior && prior.url === url ? prior.uuid : undefined) }
+      const keepRoot = prior && prior.url === url && prior.root.includes('/.artboard-vector/') ? prior.root : root
+      const canvas: ArtboardVectorCanvas = { url, root: keepRoot, uuid: uuid ?? (prior && prior.url === url ? prior.uuid : undefined) }
       await update($, canvasRef, () => canvas)
       try { await $.store.set('canvas', canvas) } catch {}
     }
@@ -275,8 +278,9 @@ export const register: Register = on => {
       const canvases = await listCanvases($)
       if (wantCanvasList) return { text: canvases.length ? `Your Design canvases:\n${canvases.map(c => `  ${c.title}  ${c.url}`).join('\n')}\n\nOpen one with /${COMMAND} <words from its title> [artboard].` : 'No Design canvases found for your account.' }
       const match = query.length ? bestMatch(canvases.map(c => ({ key: c.title, value: c })), query) : null
-      if (match && match.unique) {
-        if (!canvas || canvas.url !== match.value.url) canvas = { url: match.value.url, root: '' }
+      const boundAmong = match && canvas && canvas.url ? canvases.find(c => c.url === canvas!.url && match.candidates.includes(c.title)) : undefined
+      if (match && (match.unique || boundAmong)) {
+        if (match.unique && (!canvas || canvas.url !== match.value.url)) canvas = { url: match.value.url, root: '' }
         query.splice(0, query.length, ...match.rest)
       } else if (!canvas || !canvas.url) {
         if (!canvases.length) return { text: `No Design canvas is known yet and none was found for your account. Run /${COMMAND} <canvas url> [Board.dc.html].` }
@@ -297,7 +301,9 @@ export const register: Register = on => {
       const names = await boardNames($, canvas)
       if (query.length) {
         const titles = await boardTitles($, canvas)
-        const m = bestMatch(names.map(n => ({ key: n.replace(/\.dc\.html$/, '') + ' ' + (titles[n] || ''), value: n })), query)
+        const items = names.map(n => ({ key: n.replace(/\.dc\.html$/, '') + ' ' + (titles[n] || ''), value: n }))
+        const known = query.filter(w => items.some(it => (' ' + it.key.toLowerCase().replace(/[^a-z0-9]+/g, ' ') + ' ').includes(w.toLowerCase().replace(/[^a-z0-9]+/g, ' '))))
+        const m = known.length ? bestMatch(items, known) : null
         if (m && m.unique) board = m.value
         else if (m && m.candidates.length) return { text: `Which artboard? ${m.candidates.map(c => c.trim()).join(' · ')}` }
       }
@@ -345,16 +351,30 @@ export const register: Register = on => {
   })
 }
 
-/** Make sure the canvas has a root the Artifact tool accepts (the folder its own `read` saves into). */
+/** Pull one canvas file (`project/...`) into the root: the Artifact tool's `read` saves it in the scratchpad, then it is copied. */
+async function pullFile($: $, canvas: ArtboardVectorCanvas, path: string): Promise<{ ok: true } | { ok: false; why: string }> {
+  const ran = await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url, path })
+  if (ran.deny !== undefined || ran.isError === true) return { ok: false, why: (ran.deny ?? ran.text ?? 'read failed').toString().slice(0, 300) }
+  const saved = (ran.text || '').match(/saved(?: under)?:? "([^"]+)"/)
+  if (!saved) return { ok: false, why: 'the read named no saved file' }
+  const src = saved[1].endsWith(path) ? saved[1] : `${saved[1]}/${path}`
+  if (!(await $.fs.exists(src))) return { ok: false, why: `saved file not found at ${src}` }
+  await $.fs.write(`${canvas.root}/${path}`, await $.fs.read(src))
+  return { ok: true }
+}
+
+/** Make sure the canvas has a root the Artifact tool accepts for publishing: a folder under the session's working directory. */
 async function ensureRoot($: $, canvas: ArtboardVectorCanvas): Promise<{ canvas: ArtboardVectorCanvas } | { text: string }> {
   let next = canvas
-  if (!canvas.root || canvas.root.startsWith($.plugin.root) || !(await $.fs.exists(canvas.root))) {
-    const probe = await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url, path: 'project/canvas.json' })
-    const saved = (probe.text || '').match(/saved(?: under)?:? "([^"]+)"/)
-    const folder = saved ? saved[1].replace(/\/project\/canvas\.json$/, '') : null
-    if (!folder || !(await $.fs.exists(folder))) return { text: `Could not find a folder to work in for ${canvas.url}: ${(probe.text || probe.deny || '').toString().slice(0, 300)}` }
+  const wanted = `${sessionCwd || '.'}/.artboard-vector/${artifactId(canvas.url)}`
+  if (canvas.root !== wanted) {
+    next = { url: canvas.url, root: wanted, uuid: canvas.uuid }
+    try { await $.fs.write(`${wanted}/.gitignore`, '*\n') } catch {}
+  }
+  if (!next.uuid) {
+    const probe = await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url })
     const uuid = ((probe.text || '').match(/Artifact ([0-9a-f]{8}-[0-9a-f-]{27})/) || [])[1]
-    next = { url: canvas.url, root: folder, uuid: uuid ?? canvas.uuid }
+    if (uuid) next = { ...next, uuid }
   }
   await update($, canvasRef, () => next)
   try { await $.store.set('canvas', next) } catch {}
@@ -366,8 +386,8 @@ async function boardNames($: $, canvas: ArtboardVectorCanvas): Promise<string[]>
   let names: string[] = []
   try { names = (JSON.parse(await $.fs.read(`${canvas.root}/project/canvas.json`)).order || []).filter(isBoardName) } catch {}
   if (names.length) return names
-  const idx = await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url, path: 'project/canvas.json', out_dir: canvas.root })
-  if (idx.deny === undefined && idx.isError !== true) {
+  const idx = await pullFile($, canvas, 'project/canvas.json')
+  if (idx.ok) {
     try { names = (JSON.parse(await $.fs.read(`${canvas.root}/project/canvas.json`)).order || []).filter(isBoardName) } catch {}
   }
   if (!names.length) try { names = (await $.fs.list(`${canvas.root}/project`)).map(f => f.name).filter(isBoardName) } catch {}
@@ -380,7 +400,7 @@ async function listBoards($: $, canvas: ArtboardVectorCanvas): Promise<{ text: s
   if (!names.length) return { text: `No artboards found for ${canvas.url}.` }
   const missing: string[] = []
   for (const n of names) if (!(await $.fs.exists(`${canvas.root}/project/${n}`))) missing.push(n)
-  if (missing.length) await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url, paths: missing.map(n => `project/${n}`), out_dir: canvas.root })
+  for (const n of missing) await pullFile($, canvas, `project/${n}`)
   const rows: string[] = []
   for (const n of names) {
     try {
@@ -393,16 +413,9 @@ async function listBoards($: $, canvas: ArtboardVectorCanvas): Promise<{ text: s
 
 /** Pull the board fresh, make sure the server runs for this root, and open the editor. */
 async function openEditor($: $, canvas: ArtboardVectorCanvas, board: string, select?: string): Promise<{ text: string; context?: string[] }> {
-  const pulled = await $.tool.call({ tool: 'Artifact', action: 'read', url: canvas.url, path: `project/${board}`, out_dir: canvas.root })
+  const pulled = await pullFile($, canvas, `project/${board}`)
   const localPath = `${canvas.root}/project/${board}`
-  if (!(await $.fs.exists(localPath))) {
-    const saved = (pulled.text || '').match(/saved(?: under)?:? "([^"]+)"/)
-    if (saved && (await $.fs.exists(saved[1]))) {
-      const src = saved[1].endsWith(board) ? saved[1] : `${saved[1]}/project/${board}`
-      if (await $.fs.exists(src)) await $.fs.write(localPath, await $.fs.read(src))
-    }
-  }
-  if (!(await $.fs.exists(localPath))) return { text: `Could not get project/${board} from ${canvas.url}: ${(pulled.text || pulled.deny || '').toString().slice(0, 300)}` }
+  if (!pulled.ok && !(await $.fs.exists(localPath))) return { text: `Could not get project/${board} from ${canvas.url}: ${pulled.why}` }
 
   let server = await read($, serverRef)
   if (!(await serverAlive($, server, canvas.root))) {
