@@ -10,6 +10,8 @@ const canvasRef = atom({ plugin: 'artboard-vector', key: 'canvas' } as const, nu
 const serverRef = atom({ plugin: 'artboard-vector', key: 'server' } as const, null as ArtboardVectorServer | null)
 const pendingRef = atom({ plugin: 'artboard-vector', key: 'pendingPublish' } as const, null as ArtboardVectorPending | null)
 const notesRef = atom({ plugin: 'artboard-vector', key: 'notes' } as const, [] as string[])
+const openOfferRef = atom({ plugin: 'artboard-vector', key: 'openOffer' } as const, null as { url: string; board: string } | null)
+const OPEN_PANE = 'vector-open'
 // Server starts are queued here and run by a loop rooted in session.start, so the child outlives whatever dispatch asked for it.
 const serverRequests: { root: string; ok: (s: ArtboardVectorServer) => void; no: (e: Error) => void }[] = []
 // A comment opens the editor only when it starts with `/vector-edit` or `vector:` (anything after is ignored).
@@ -286,6 +288,22 @@ export const register: Register = on => {
     return openEditor($, canvas, board, select)
   })
 
+  // Terminal: a small "Open it?" dialog after the editor is ready; y opens the URL in the default browser.
+  on('ui.render', { component: 'Pane', requestId: OPEN_PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const offer = await read($, openOfferRef)
+    const url = offer ? offer.url : ''
+    const board = offer ? offer.board : ''
+    const close = () => { void $.ui.close({ id: OPEN_PANE }) }
+    return h(Box, { flexDirection: 'column' },
+      h(Text, null, `Vector editor ready for ${board}. Open it in your browser?`),
+      h(Box, { gap: 1 },
+        h(Button, { key: 'open', label: 'Open', hotkey: 'y', variant: 'primary', onPress: () => { void openInBrowser($, url); close() } }),
+        h(Button, { key: 'no', label: 'Not now', hotkey: 'n', onPress: close }),
+      ),
+    )
+  })
+
   // A comment sent to Claude from the canvas that asks to edit shapes opens the editor on its anchor.
   on('session.receive', async ($, e, next) => {
     if (e.agentId !== undefined || !/Artifact comment sent to Claude/.test(e.text)) return next(e)
@@ -384,9 +402,24 @@ async function openEditor($: $, canvas: ArtboardVectorCanvas, board: string, sel
     } catch {}
   }
   $.ui.status(`vector: editing ${board}`)
-  return opened
-    ? { text: `Vector editor open for ${board}.` }
-    : { text: `Vector editor ready for ${board}: ${url}`, context: [`Open ${url} in the built-in browser pane with preview_start (url), then stop and let the user edit there. The ${PLUGIN} mod republishes the canvas itself on save; do not read, verify or publish the board unless asked.`] }
+  if (opened) return { text: `Vector editor open for ${board}.` }
+  const surfaces = await $.session.surfaces()
+  const onDesktop = surfaces.some(s => s === 'desktop')
+  if (!onDesktop) {
+    await update($, openOfferRef, () => ({ url, board }))
+    void $.ui.open({ id: OPEN_PANE, title: 'Vector editor', focus: true, closeOnEscape: true, holdToasts: true, rows: 4 })
+    return { text: `Vector editor ready for ${board}: ${url}` }
+  }
+  return { text: `Vector editor ready for ${board}: ${url}`, context: [`Open ${url} in the built-in browser pane with preview_start (url), then stop and let the user edit there. The ${PLUGIN} mod republishes the canvas itself on save; do not read, verify or publish the board unless asked.`] }
+}
+
+/** Open a URL in the person's default browser (macOS `open`, Linux `xdg-open`). */
+async function openInBrowser($: $, url: string) {
+  if (!/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) return
+  for (const argv of [['open', url], ['xdg-open', url]]) {
+    try { const r = await $.process.run(argv, { timeoutMs: 5000 }); if (r.exitCode === 0) return } catch {}
+  }
+  $.ui.toast(`Could not open a browser; paste this URL: ${url}`)
 }
 
 /** The user's Design canvases, from the Artifact tool's listing. */

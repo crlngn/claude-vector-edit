@@ -15,6 +15,7 @@ declare module 'claude-code' {
       boards: { readonly byId: ArtboardVectorBoard }
       pendingPublish: ArtboardVectorPending | null
       notes: string[]
+      openOffer: { url: string; board: string } | null
     }
   }
 }
