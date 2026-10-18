@@ -126,11 +126,30 @@ async function runServer($: $, req: { root: string; ok: (s: ArtboardVectorServer
   }
 }
 
+/** Append one line to the mod's publish log (`<plugin root>/.publish.log`), kept to 200 lines. */
+async function publishLog($: $, line: string) {
+  try {
+    const path = `${$.plugin.root}/.publish.log`
+    let prior = ''
+    try { prior = await $.fs.read(path) } catch {}
+    await $.fs.write(path, (prior + `${new Date().toISOString()} ${line}\n`).split('\n').slice(-200).join('\n'))
+  } catch {}
+}
+
 /** Republish the saved board to the canvas through the Artifact tool, retrying once over a stale refusal. */
 async function publishBack($: $, saved: { board: string; path: string; svgOrdinals: number[]; at: string }) {
   const canvas = await read($, canvasRef)
-  if (!canvas) return
-  const attempt = () => $.tool.call({ tool: 'Artifact', action: 'publish', url: canvas.url, root: canvas.root, file_path: saved.path })
+  if (!canvas) { await publishLog($, `saved ${saved.board} but no canvas is bound`); return }
+  const attempt = async () => {
+    try {
+      const r = await $.tool.call({ tool: 'Artifact', action: 'publish', url: canvas.url, root: canvas.root, file_path: saved.path })
+      await publishLog($, `publish ${saved.board}: deny=${r.deny ?? ''} isError=${r.isError ?? ''} text=${(r.text ?? '').toString().slice(0, 300).replace(/\n/g, ' ')}`)
+      return r
+    } catch (e) {
+      await publishLog($, `publish ${saved.board} threw: ${e instanceof Error ? e.message : String(e)}`)
+      throw e
+    }
+  }
   let ran = await attempt()
   if (ran.deny === undefined && ran.isError !== true) {
     $.ui.toast(`${saved.board} saved to the canvas`)

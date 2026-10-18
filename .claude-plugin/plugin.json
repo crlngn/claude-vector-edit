@@ -1,6 +1,6 @@
 {
   "name": "artboard-vector",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": { "name": "Carol" },
   "description": "Vector-edit the SVG shapes of a /design artboard in the browser pane; saves back to the canvas.",
   "types": "./types/index.d.ts"
